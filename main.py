@@ -17,7 +17,7 @@ security = HTTPBearer()
 # Konfiguratsiya
 SECRET_KEY = "your-secret-key-change-this"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 999999
 
 # Telegram Bot Token - backendda saqlanadi
 TELEGRAM_BOT_TOKEN = "8157743798:AAELzxyyFLSMxbT-XL4l-3ZVmxVBXYOY0Ro"
