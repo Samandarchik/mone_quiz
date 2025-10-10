@@ -181,20 +181,17 @@ def check_category_access(category: dict, user_role: str) -> bool:
     return user_role in category.get("allowedRoles", [])
 
 # API Endpoints
-
 @app.post("/api/register", response_model=Token)
-async def register(user: UserCreate, current_user: dict = Depends(verify_token)):
-    """Super admin faqat yangi user yaratishi mumkin"""
-    if current_user.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Only super admin can create users")
-    
+async def register(user: UserCreate):
+    """Har qanday foydalanuvchi ro'yxatdan o'tishi mumkin"""
+
     data = load_json(USERS_FILE)
-    
+
     # Username mavjudligini tekshirish
     if get_user_by_username(user.username):
         raise HTTPException(status_code=400, detail="Username already exists")
-    
-    # Yangi user yaratish
+
+    # Yangi foydalanuvchini yaratish
     new_user = {
         "id": str(uuid.uuid4()),
         "username": user.username,
@@ -202,10 +199,10 @@ async def register(user: UserCreate, current_user: dict = Depends(verify_token))
         "role": user.role,
         "created_at": datetime.now().isoformat()
     }
-    
+
     data["users"].append(new_user)
     save_json(USERS_FILE, data)
-    
+
     access_token = create_access_token({"sub": user.username, "role": user.role})
     return {"access_token": access_token, "token_type": "bearer"}
 
