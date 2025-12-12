@@ -19,7 +19,7 @@ SECRET_KEY = "your-secret-key-change-this"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 999999
 
-# Telegram Bot Token - backendda saqlanadi
+# Telegram Bot Token
 TELEGRAM_BOT_TOKEN = "8157743798:AAELzxyyFLSMxbT-XL4l-3ZVmxVBXYOY0Ro"
 TELEGRAM_USER_ID = 1066137436
 
@@ -30,8 +30,8 @@ USERS_FILE = DATA_DIR / "users.json"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 QUESTIONS_FILE = DATA_DIR / "questions.json"
 RESULTS_FILE = DATA_DIR / "results.json"
+STATISTICS_FILE = DATA_DIR / "statistics.json"
 
-# Initialize JSON files
 def init_db():
     if not USERS_FILE.exists():
         initial_data = {
@@ -57,6 +57,10 @@ def init_db():
     if not RESULTS_FILE.exists():
         with open(RESULTS_FILE, 'w', encoding='utf-8') as f:
             json.dump({"results": []}, f, ensure_ascii=False, indent=2)
+    
+    if not STATISTICS_FILE.exists():
+        with open(STATISTICS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({"statistics": {}}, f, ensure_ascii=False, indent=2)
 
 init_db()
 
@@ -74,12 +78,12 @@ class CategoryCreate(BaseModel):
     name: str
     description: Optional[str] = ""
     icon: Optional[str] = "📚"
-    allowedRoles: List[str]  # ["povar", "ofitsiant"]
+    allowedRoles: List[str]
 
 class Question(BaseModel):
     question: str
     options: List[str]
-    correctAnswer: str  # To'g'ri javobning o'zi (text)
+    correctAnswer: str
 
 class QuestionCreate(BaseModel):
     categoryId: str
@@ -89,20 +93,32 @@ class QuestionSingle(BaseModel):
     categoryId: str
     question: str
     options: List[str]
-    correctAnswer: str  # To'g'ri javobning o'zi (text)
+    correctAnswer: str
 
 class Answer(BaseModel):
     questionId: str
-    answer: Any  # int yoki string bo'lishi mumkin
+    answer: Any
 
 class QuizSubmit(BaseModel):
     categoryId: str
     answers: List[Answer]
-    timeSpent: int  # seconds
+    timeSpent: int
+
+class ResultSubmit(BaseModel):
+    categoryId: str
+    totalQuestions: int
+    correctAnswers: int
+    wrongAnswers: int
+    percentage: float
+    timeSpent: int
+    categoryName: str
+    wrongDetails: Optional[List[Dict]] = []
 
 class Token(BaseModel):
     access_token: str
     token_type: str
+    user: Optional[Dict[str, Any]] 
+
 
 # Helper functions
 def load_json(file_path):
@@ -139,28 +155,21 @@ def get_user_by_username(username: str):
     return None
 
 def shuffle_questions(questions: List[dict], user_id: str, category_id: str):
-    """Har bir user uchun savollar va javoblarni aralashtirib beradi"""
     seed = hashlib.md5(f"{user_id}{category_id}{datetime.now().date()}".encode()).hexdigest()
     random.seed(seed)
     
     shuffled = []
     for q in questions:
         new_q = q.copy()
-        
-        # Javoblarni aralashtiramiz
         options = q["options"].copy()
         random.shuffle(options)
-        
         new_q["options"] = options
-        # correctAnswer o'zi text bo'lgani uchun o'zgartirish kerak emas
         shuffled.append(new_q)
     
-    # Savollar tartibini ham aralashtiramiz
     random.shuffle(shuffled)
     return shuffled
 
 def send_telegram_message(bot_token: str, user_id: int, message: str):
-    """Telegram bot orqali xabar yuborish"""
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         data = {
@@ -175,23 +184,58 @@ def send_telegram_message(bot_token: str, user_id: int, message: str):
         return None
 
 def check_category_access(category: dict, user_role: str) -> bool:
-    """User kategoriyaga kirish huquqini tekshirish"""
     if user_role == "super_admin":
         return True
     return user_role in category.get("allowedRoles", [])
 
+def update_statistics(username: str, category_id: str, category_name: str, result_data: dict):
+    """Statistikani yangilash - barcha testlar hisobini saqlash"""
+    stats_data = load_json(STATISTICS_FILE)
+    
+    if category_id not in stats_data["statistics"]:
+        stats_data["statistics"][category_id] = {
+            "categoryName": category_name,
+            "users": {}
+        }
+    
+    # Agar user mavjud bo'lsa, qo'shib borish
+    if username in stats_data["statistics"][category_id]["users"]:
+        existing = stats_data["statistics"][category_id]["users"][username]
+        
+        # Umumiy ma'lumotlarni yangilash
+        total_correct = existing["totalCorrectAnswers"] + result_data["correctAnswers"]
+        total_questions = existing["totalQuestions"] + result_data["totalQuestions"]
+        test_count = existing["testCount"] + 1
+        
+        stats_data["statistics"][category_id]["users"][username] = {
+            "username": username,
+            "totalCorrectAnswers": total_correct,
+            "totalQuestions": total_questions,
+            "testCount": test_count,
+            "averagePercentage": round((total_correct / total_questions) * 100, 2) if total_questions > 0 else 0,
+            "lastUpdated": datetime.now().isoformat()
+        }
+    else:
+        # Yangi user uchun
+        stats_data["statistics"][category_id]["users"][username] = {
+            "username": username,
+            "totalCorrectAnswers": result_data["correctAnswers"],
+            "totalQuestions": result_data["totalQuestions"],
+            "testCount": 1,
+            "averagePercentage": result_data["percentage"],
+            "lastUpdated": datetime.now().isoformat()
+        }
+    
+    save_json(STATISTICS_FILE, stats_data)
+
 # API Endpoints
 @app.post("/api/register", response_model=Token)
 async def register(user: UserCreate):
-    """Har qanday foydalanuvchi ro'yxatdan o'tishi mumkin"""
-
     data = load_json(USERS_FILE)
 
-    # Username mavjudligini tekshirish
     if get_user_by_username(user.username):
         raise HTTPException(status_code=400, detail="Username already exists")
 
-    # Yangi foydalanuvchini yaratish
     new_user = {
         "id": str(uuid.uuid4()),
         "username": user.username,
@@ -208,7 +252,6 @@ async def register(user: UserCreate):
 
 @app.post("/api/login", response_model=Token)
 async def login(user: UserLogin):
-    """Login qilish"""
     db_user = get_user_by_username(user.username)
     
     if not db_user:
@@ -227,7 +270,7 @@ async def login(user: UserLogin):
     return {
         "access_token": access_token, 
         "token_type": "bearer",
-        "role":db_user["role"],
+        "role": db_user["role"],
         "user": {
             "username": db_user["username"],
             "role": db_user["role"],
@@ -237,7 +280,6 @@ async def login(user: UserLogin):
 
 @app.get("/api/roles")
 async def get_roles(current_user: dict = Depends(verify_token)):
-    """Barcha rollarni olish (kategoriya yaratishda kerak)"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can view roles")
     
@@ -245,11 +287,8 @@ async def get_roles(current_user: dict = Depends(verify_token)):
     roles = list(set([u["role"] for u in data["users"] if u["role"] != "super_admin"]))
     return {"roles": roles}
 
-# KATEGORIYA ENDPOINTS
-
 @app.post("/api/categories")
 async def create_category(category: CategoryCreate, current_user: dict = Depends(verify_token)):
-    """Kategoriya yaratish (super admin)"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can create categories")
     
@@ -276,21 +315,17 @@ async def create_category(category: CategoryCreate, current_user: dict = Depends
 
 @app.get("/api/categories")
 async def get_categories(current_user: dict = Depends(verify_token)):
-    """Userga ruxsat berilgan kategoriyalarni olish (user rolega asoslanib)"""
     data = load_json(CATEGORIES_FILE)
     user_role = current_user.get("role")
     
-    # Super admin barcha kategoriyalarni ko'radi
     if user_role == "super_admin":
         categories = data["categories"]
     else:
-        # Oddiy user faqat o'z roliga ruxsat berilgan kategoriyalarni ko'radi
         categories = [
             cat for cat in data["categories"]
             if user_role in cat.get("allowedRoles", [])
         ]
     
-    # Har bir kategoriya uchun savol sonini hisoblash
     questions_data = load_json(QUESTIONS_FILE)
     for cat in categories:
         cat["questionCount"] = len([
@@ -306,18 +341,15 @@ async def get_categories(current_user: dict = Depends(verify_token)):
 
 @app.get("/api/categories/{category_id}")
 async def get_category_detail(category_id: str, current_user: dict = Depends(verify_token)):
-    """Kategoriya tafsilotlari"""
     data = load_json(CATEGORIES_FILE)
     category = next((c for c in data["categories"] if c["id"] == category_id), None)
     
     if not category:
         raise HTTPException(status_code=404, detail="Kategoriya topilmadi")
     
-    # Ruxsatni tekshirish
     if not check_category_access(category, current_user.get("role")):
         raise HTTPException(status_code=403, detail="Bu kategoriyaga ruxsatingiz yo'q")
     
-    # Savol sonini qo'shish
     questions_data = load_json(QUESTIONS_FILE)
     category["questionCount"] = len([
         q for q in questions_data["questions"]
@@ -328,7 +360,6 @@ async def get_category_detail(category_id: str, current_user: dict = Depends(ver
 
 @app.put("/api/categories/{category_id}")
 async def update_category(category_id: str, category: CategoryCreate, current_user: dict = Depends(verify_token)):
-    """Kategoriyani yangilash"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can update categories")
     
@@ -351,7 +382,6 @@ async def update_category(category_id: str, category: CategoryCreate, current_us
 
 @app.delete("/api/categories/{category_id}")
 async def delete_category(category_id: str, current_user: dict = Depends(verify_token)):
-    """Kategoriyani o'chirish"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can delete categories")
     
@@ -359,22 +389,17 @@ async def delete_category(category_id: str, current_user: dict = Depends(verify_
     data["categories"] = [c for c in data["categories"] if c["id"] != category_id]
     save_json(CATEGORIES_FILE, data)
     
-    # Kategoriyaga tegishli savollarni ham o'chirish
     questions_data = load_json(QUESTIONS_FILE)
     questions_data["questions"] = [q for q in questions_data["questions"] if q["categoryId"] != category_id]
     save_json(QUESTIONS_FILE, questions_data)
     
     return {"message": "Kategoriya o'chirildi", "success": True}
 
-# SAVOL ENDPOINTS
-
 @app.post("/api/questions")
 async def create_questions(questions_data: QuestionCreate, current_user: dict = Depends(verify_token)):
-    """Savollar yaratish (list) - kategoriya bilan"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can create questions")
     
-    # Kategoriya mavjudligini tekshirish
     categories = load_json(CATEGORIES_FILE)
     category = next((c for c in categories["categories"] if c["id"] == questions_data.categoryId), None)
     if not category:
@@ -383,7 +408,6 @@ async def create_questions(questions_data: QuestionCreate, current_user: dict = 
     data = load_json(QUESTIONS_FILE)
     
     for q in questions_data.questions:
-        # To'g'ri javob options ichida borligini tekshirish
         if q.correctAnswer not in q.options:
             raise HTTPException(
                 status_code=400, 
@@ -395,7 +419,7 @@ async def create_questions(questions_data: QuestionCreate, current_user: dict = 
             "categoryId": questions_data.categoryId,
             "question": q.question,
             "options": q.options,
-            "correctAnswer": q.correctAnswer,  # Text sifatida
+            "correctAnswer": q.correctAnswer,
             "created_at": datetime.now().isoformat()
         }
         data["questions"].append(new_question)
@@ -409,17 +433,14 @@ async def create_questions(questions_data: QuestionCreate, current_user: dict = 
 
 @app.post("/api/questions/single")
 async def create_single_question(question: QuestionSingle, current_user: dict = Depends(verify_token)):
-    """Bitta savol qo'shish - kategoriya bilan"""
     if current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admin can create questions")
     
-    # Kategoriya mavjudligini tekshirish
     categories = load_json(CATEGORIES_FILE)
     category = next((c for c in categories["categories"] if c["id"] == question.categoryId), None)
     if not category:
         raise HTTPException(status_code=404, detail="Kategoriya topilmadi")
     
-    # To'g'ri javob options ichida borligini tekshirish
     if question.correctAnswer not in question.options:
         raise HTTPException(
             status_code=400, 
@@ -433,7 +454,7 @@ async def create_single_question(question: QuestionSingle, current_user: dict = 
         "categoryId": question.categoryId,
         "question": question.question,
         "options": question.options,
-        "correctAnswer": question.correctAnswer,  # Text sifatida
+        "correctAnswer": question.correctAnswer,
         "created_at": datetime.now().isoformat()
     }
     data["questions"].append(new_question)
@@ -445,11 +466,63 @@ async def create_single_question(question: QuestionSingle, current_user: dict = 
         "categoryId": question.categoryId,
         "success": True
     }
+# Savolni yangilash
+@app.put("/api/questions/{question_id}")
+async def update_question(question_id: str, question: QuestionSingle, current_user: dict = Depends(verify_token)):
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can update questions")
+    
+    if question.correctAnswer not in question.options:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"To'g'ri javob '{question.correctAnswer}' options ichida topilmadi"
+        )
+    
+    data = load_json(QUESTIONS_FILE)
+    
+    question_index = next((i for i, q in enumerate(data["questions"]) if q["id"] == question_id), None)
+    if question_index is None:
+        raise HTTPException(status_code=404, detail="Savol topilmadi")
+    
+    data["questions"][question_index].update({
+        "categoryId": question.categoryId,
+        "question": question.question,
+        "options": question.options,
+        "correctAnswer": question.correctAnswer,
+        "updated_at": datetime.now().isoformat()
+    })
+    
+    save_json(QUESTIONS_FILE, data)
+    
+    return {
+        "message": "Savol yangilandi",
+        "questionId": question_id,
+        "success": True
+    }
+
+# Savolni o'chirish
+@app.delete("/api/questions/{question_id}")
+async def delete_question(question_id: str, current_user: dict = Depends(verify_token)):
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can delete questions")
+    
+    data = load_json(QUESTIONS_FILE)
+    
+    initial_count = len(data["questions"])
+    data["questions"] = [q for q in data["questions"] if q["id"] != question_id]
+    
+    if len(data["questions"]) == initial_count:
+        raise HTTPException(status_code=404, detail="Savol topilmadi")
+    
+    save_json(QUESTIONS_FILE, data)
+    
+    return {
+        "message": "Savol o'chirildi",
+        "success": True
+    }
 
 @app.get("/api/categories/{category_id}/questions")
 async def get_category_questions(category_id: str, current_user: dict = Depends(verify_token)):
-    """Kategoriya bo'yicha savollarni olish (user rolega qarab)"""
-    # Kategoriyani topish
     categories = load_json(CATEGORIES_FILE)
     category = next((c for c in categories["categories"] if c["id"] == category_id), None)
     
@@ -458,7 +531,6 @@ async def get_category_questions(category_id: str, current_user: dict = Depends(
     
     user_role = current_user.get("role")
     
-    # Super admin emas bo'lsa, ruxsatni tekshirish
     if user_role != "super_admin":
         if user_role not in category.get("allowedRoles", []):
             raise HTTPException(
@@ -466,7 +538,6 @@ async def get_category_questions(category_id: str, current_user: dict = Depends(
                 detail=f"Bu kategoriya faqat {', '.join(category.get('allowedRoles', []))} rollari uchun"
             )
     
-    # Savollarni olish
     data = load_json(QUESTIONS_FILE)
     questions = [q for q in data["questions"] if q["categoryId"] == category_id]
     
@@ -478,10 +549,8 @@ async def get_category_questions(category_id: str, current_user: dict = Depends(
             "userRole": user_role
         }
     
-    # User uchun savollarni aralashtiramiz
     shuffled = shuffle_questions(questions, current_user["sub"], category_id)
     
-    # Javoblarni yashiramiz (frontend uchun)
     response_questions = []
     for q in shuffled:
         response_questions.append({
@@ -500,14 +569,11 @@ async def get_category_questions(category_id: str, current_user: dict = Depends(
 
 @app.post("/api/check")
 async def check_answers(submission: QuizSubmit, current_user: dict = Depends(verify_token)):
-    """Javoblarni tekshirish va natijani Telegramga yuborish (bot token backendda)"""
-    # Kategoriya tekshirish
     categories = load_json(CATEGORIES_FILE)
     category = next((c for c in categories["categories"] if c["id"] == submission.categoryId), None)
     if not category:
         raise HTTPException(status_code=404, detail="Kategoriya topilmadi")
     
-    # User ruxsatini tekshirish
     user_role = current_user.get("role")
     if user_role != "super_admin":
         if user_role not in category.get("allowedRoles", []):
@@ -516,7 +582,6 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
     data = load_json(QUESTIONS_FILE)
     all_questions = {q["id"]: q for q in data["questions"] if q["categoryId"] == submission.categoryId}
     
-    # Natijalarni hisoblash
     total_questions = len(submission.answers)
     correct_count = 0
     wrong_answers = []
@@ -529,9 +594,7 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
         user_answer = answer.answer
         correct_answer = question["correctAnswer"]
         
-        # Javob int yoki string bo'lishi mumkin
         if isinstance(user_answer, int):
-            # Index bo'lsa, textga o'tkazamiz
             if 0 <= user_answer < len(question["options"]):
                 user_answer_text = question["options"][user_answer]
             else:
@@ -539,7 +602,6 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
         else:
             user_answer_text = user_answer
         
-        # Textlarni solishtirish (kichik-katta harflarni hisobga olmasdan)
         is_correct = user_answer_text.strip().lower() == correct_answer.strip().lower()
         
         if is_correct:
@@ -551,7 +613,8 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
                 "correctAnswer": correct_answer
             })
     
-    # Natijani saqlash
+    percentage = round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0
+    
     result = {
         "id": str(uuid.uuid4()),
         "username": current_user["sub"],
@@ -562,7 +625,7 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
         "correctAnswers": correct_count,
         "wrongAnswers": len(wrong_answers),
         "timeSpent": submission.timeSpent,
-        "percentage": round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0,
+        "percentage": percentage,
         "details": wrong_answers,
         "submittedAt": datetime.now().isoformat()
     }
@@ -571,68 +634,166 @@ async def check_answers(submission: QuizSubmit, current_user: dict = Depends(ver
     results_data["results"].append(result)
     save_json(RESULTS_FILE, results_data)
     
-    # Telegram xabari
-    minutes = submission.timeSpent // 60
-    seconds = submission.timeSpent % 60
+    return {
+        "success": True,
+        "result": {
+            "categoryId": submission.categoryId,
+            "totalQuestions": total_questions,
+            "correctAnswers": correct_count,
+            "wrongAnswers": len(wrong_answers),
+            "percentage": percentage,
+            "timeSpent": submission.timeSpent,
+            "categoryName": category['name'],
+            "wrongDetails": wrong_answers
+        },
+        "message": "Natija tayyor. Yuborish uchun /api/submit-result endpointiga yuboring"
+    }
+
+@app.post("/api/submit-result")
+async def submit_result_to_telegram(result_data: ResultSubmit, current_user: dict = Depends(verify_token)):
+    update_statistics(
+        username=current_user["sub"],
+        category_id=result_data.categoryId,
+        category_name=result_data.categoryName,
+        result_data={
+            "correctAnswers": result_data.correctAnswers,
+            "totalQuestions": result_data.totalQuestions,
+            "percentage": result_data.percentage
+        }
+    )
+    
+    minutes = result_data.timeSpent // 60
+    seconds = result_data.timeSpent % 60
     
     message = f"""
 📊 <b>Test Natijalari</b>
 
-📚 Kategoriya: {category['name']}
+📚 Kategoriya: {result_data.categoryName}
 👤 Foydalanuvchi: {current_user['sub']}
-🎭 Rol: {user_role}
-✅ To'g'ri javoblar: {correct_count}/{total_questions}
-❌ Xato javoblar: {len(wrong_answers)}
-📈 Foiz: {result['percentage']}%
+🎭 Rol: {current_user.get('role', 'N/A')}
+✅ To'g'ri javoblar: {result_data.correctAnswers}/{result_data.totalQuestions}
+❌ Xato javoblar: {result_data.wrongAnswers}
+📈 Foiz: {result_data.percentage}%
 ⏱ Vaqt: {minutes} daqiqa {seconds} soniya
 📅 Sana: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
 """
     
-    if wrong_answers:
+    if result_data.wrongDetails and len(result_data.wrongDetails) > 0:
         message += "\n<b>Xato javoblar:</b>\n"
-        for i, wa in enumerate(wrong_answers[:10], 1):  # Faqat 10 ta xatoni ko'rsatamiz
+        for i, wa in enumerate(result_data.wrongDetails[:10], 1):
             message += f"\n{i}. {wa['question'][:100]}...\n"
             message += f"   ❌ Siz: {wa['userAnswer']}\n"
             message += f"   ✅ To'g'ri: {wa['correctAnswer']}\n"
         
-        if len(wrong_answers) > 10:
-            message += f"\n... va yana {len(wrong_answers) - 10} ta xato"
+        if len(result_data.wrongDetails) > 10:
+            message += f"\n... va yana {len(result_data.wrongDetails) - 10} ta xato"
     else:
         message += "\n🎉 <b>Tabriklaymiz! Barcha javoblar to'g'ri!</b>"
     
-    # Telegramga yuborish (backend tokendan foydalanib)
-    send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID, message)
+    telegram_response = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID, message)
     
     return {
         "success": True,
-        "result": {
-            "totalQuestions": total_questions,
-            "correctAnswers": correct_count,
-            "wrongAnswers": len(wrong_answers),
-            "percentage": result['percentage'],
-            "timeSpent": submission.timeSpent,
-            "categoryName": category['name']
-        },
-        "message": "Natijalar Telegramga yuborildi"
+        "message": "Natijalar Telegramga muvaffaqiyatli yuborildi!",
+        "telegram_response": telegram_response
+    }
+
+@app.get("/api/statistics")
+async def get_all_statistics(current_user: dict = Depends(verify_token)):
+    """Barcha kategoriyalar statistikasi"""
+    categories = load_json(CATEGORIES_FILE)
+    user_role = current_user.get("role")
+    
+    if user_role == "super_admin":
+        accessible_categories = categories["categories"]
+    else:
+        accessible_categories = [
+            cat for cat in categories["categories"]
+            if user_role in cat.get("allowedRoles", [])
+        ]
+    
+    stats_data = load_json(STATISTICS_FILE)
+    all_stats = []
+    
+    for category in accessible_categories:
+        category_id = category["id"]
+        
+        if category_id in stats_data["statistics"]:
+            category_stats = stats_data["statistics"][category_id]
+            stats_list = list(category_stats["users"].values())
+            stats_list.sort(key=lambda x: x["percentage"], reverse=True)
+            
+            all_stats.append({
+                "categoryId": category_id,
+                "categoryName": category["name"],
+                "icon": category.get("icon", "📚"),
+                "statistics": stats_list,
+                "totalUsers": len(stats_list)
+            })
+        else:
+            all_stats.append({
+                "categoryId": category_id,
+                "categoryName": category["name"],
+                "icon": category.get("icon", "📚"),
+                "statistics": [],
+                "totalUsers": 0
+            })
+    
+    return {
+        "success": True,
+        "totalCategories": len(all_stats),
+        "userRole": user_role,
+        "statistics": all_stats
+    }
+
+@app.get("/api/statistics/{category_id}")
+async def get_category_statistics(category_id: str, current_user: dict = Depends(verify_token)):
+    """Bitta kategoriya statistikasi"""
+    categories = load_json(CATEGORIES_FILE)
+    category = next((c for c in categories["categories"] if c["id"] == category_id), None)
+    
+    if not category:
+        raise HTTPException(status_code=404, detail="Kategoriya topilmadi")
+    
+    user_role = current_user.get("role")
+    if user_role != "super_admin":
+        if user_role not in category.get("allowedRoles", []):
+            raise HTTPException(status_code=403, detail="Bu kategoriyaga ruxsatingiz yo'q")
+    
+    stats_data = load_json(STATISTICS_FILE)
+    
+    if category_id not in stats_data["statistics"]:
+        return {
+            "categoryId": category_id,
+            "categoryName": category["name"],
+            "statistics": [],
+            "total": 0
+        }
+    
+    category_stats = stats_data["statistics"][category_id]
+    stats_list = list(category_stats["users"].values())
+    stats_list.sort(key=lambda x: x["percentage"], reverse=True)
+    
+    return {
+        "categoryId": category_id,
+        "categoryName": category_stats["categoryName"],
+        "statistics": stats_list,
+        "total": len(stats_list)
     }
 
 @app.get("/api/results")
 async def get_results(current_user: dict = Depends(verify_token)):
-    """Barcha natijalarni ko'rish"""
     data = load_json(RESULTS_FILE)
     
     if current_user.get("role") == "super_admin":
-        # Super admin barcha natijalarni ko'radi
         return {"results": data["results"]}
     else:
-        # Oddiy user faqat o'z natijalarini ko'radi
         user_results = [r for r in data["results"] if r["username"] == current_user["sub"]]
         return {"results": user_results}
 
 @app.get("/api/results/category/{category_id}")
 async def get_category_results(category_id: str, current_user: dict = Depends(verify_token)):
-    """Kategoriya bo'yicha natijalarni ko'rish"""
     data = load_json(RESULTS_FILE)
     
     if current_user.get("role") == "super_admin":
@@ -645,28 +806,139 @@ async def get_category_results(category_id: str, current_user: dict = Depends(ve
     
     return {"results": results, "categoryId": category_id}
 
+@app.get("/api/users")
+async def get_users(current_user: dict = Depends(verify_token)):
+    """Barcha userlarni ko'rish"""
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can view users")
+    
+    data = load_json(USERS_FILE)
+    
+    # Parollarni olib tashlash
+    users_list = []
+    for user in data["users"]:
+        users_list.append({
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "created_at": user["created_at"]
+        })
+    
+    return {
+        "success": True,
+        "users": users_list,
+        "total": len(users_list)
+    }
+
+@app.get("/api/users/{user_id}")
+async def get_user_detail(user_id: str, current_user: dict = Depends(verify_token)):
+    """Bitta user tafsilotlari"""
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can view user details")
+    
+    data = load_json(USERS_FILE)
+    user = next((u for u in data["users"] if u["id"] == user_id), None)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User topilmadi")
+    
+    # Parolsiz qaytarish
+    user_info = {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "created_at": user["created_at"]
+    }
+    
+    # User natijalarini qo'shish
+    results_data = load_json(RESULTS_FILE)
+    user_results = [r for r in results_data["results"] if r["username"] == user["username"]]
+    
+    return {
+        "success": True,
+        "user": user_info,
+        "totalTests": len(user_results),
+        "recentResults": user_results[-5:]  # Oxirgi 5 ta natija
+    }
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(user_id: str, current_user: dict = Depends(verify_token)):
+    """Userni o'chirish"""
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can delete users")
+    
+    data = load_json(USERS_FILE)
+    user = next((u for u in data["users"] if u["id"] == user_id), None)
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User topilmadi")
+    
+    # Super adminni o'chirish mumkin emas
+    if user["role"] == "super_admin":
+        raise HTTPException(status_code=403, detail="Cannot delete super admin")
+    
+    # Userni o'chirish
+    data["users"] = [u for u in data["users"] if u["id"] != user_id]
+    save_json(USERS_FILE, data)
+    
+    return {
+        "success": True,
+        "message": f"User {user['username']} o'chirildi"
+    }
+
+@app.put("/api/users/{user_id}/role")
+async def update_user_role(user_id: str, new_role: dict, current_user: dict = Depends(verify_token)):
+    """User rolini o'zgartirish"""
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can update user roles")
+    
+    data = load_json(USERS_FILE)
+    user_index = next((i for i, u in enumerate(data["users"]) if u["id"] == user_id), None)
+    
+    if user_index is None:
+        raise HTTPException(status_code=404, detail="User topilmadi")
+    
+    # Super adminning rolini o'zgartirish mumkin emas
+    if data["users"][user_index]["role"] == "super_admin":
+        raise HTTPException(status_code=403, detail="Cannot change super admin role")
+    
+    data["users"][user_index]["role"] = new_role.get("role")
+    data["users"][user_index]["updated_at"] = datetime.now().isoformat()
+    save_json(USERS_FILE, data)
+    
+    return {
+        "success": True,
+        "message": "User roli yangilandi",
+        "user": {
+            "id": data["users"][user_index]["id"],
+            "username": data["users"][user_index]["username"],
+            "role": data["users"][user_index]["role"]
+        }
+    }
+
 @app.get("/")
 async def root():
     return {
-        "message": "Quiz System API with Categories",
-        "version": "2.0",
+        "message": "Quiz System API - Yaxshilangan Versiya",
+        "version": "3.0",
         "endpoints": {
-            "POST /api/login": "Login qilish",
-            "POST /api/register": "Yangi user yaratish (super admin)",
-            "GET /api/roles": "Rollarni olish",
+            "POST /api/login": "Login",
+            "POST /api/register": "Register",
+            "GET /api/roles": "Rollar ro'yxati",
+            "GET /api/categories": "Kategoriyalar",
             "POST /api/categories": "Kategoriya yaratish",
-            "GET /api/categories": "Kategoriyalarni olish",
-            "GET /api/categories/{id}": "Kategoriya tafsilotlari",
-            "PUT /api/categories/{id}": "Kategoriyani yangilash",
-            "DELETE /api/categories/{id}": "Kategoriyani o'chirish",
-            "POST /api/questions": "Savollar qo'shish (list)",
-            "POST /api/questions/single": "Bitta savol qo'shish",
-            "GET /api/categories/{id}/questions": "Kategoriya savollarini olish",
+            "POST /api/questions": "Savollar qo'shish",
+            "GET /api/categories/{id}/questions": "Kategoriya savollari",
             "POST /api/check": "Javoblarni tekshirish",
-            "GET /api/results": "Natijalarni ko'rish",
-            "GET /api/results/category/{id}": "Kategoriya natijalarini ko'rish"
+            "POST /api/submit-result": "Telegramga yuborish",
+            "GET /api/statistics": "Barcha statistika",
+            "GET /api/statistics/{id}": "Kategoriya statistikasi",
+            "GET /api/users": "Userlar ro'yxati (super admin)",
+            "GET /api/users/{id}": "User tafsilotlari",
+            "DELETE /api/users/{id}": "Userni o'chirish",
+            "PUT /api/users/{id}/role": "User rolini o'zgartirish"
         }
-    }#e4126d65-cad3-4577-a3ee-c3de134ada89
+    }
 
 if __name__ == "__main__":
     import uvicorn
