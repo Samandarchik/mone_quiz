@@ -701,7 +701,7 @@ async def submit_result_to_telegram(result_data: ResultSubmit, current_user: dic
 
 @app.get("/api/statistics")
 async def get_all_statistics(current_user: dict = Depends(verify_token)):
-    """Barcha kategoriyalar statistikasi"""
+    """Barcha kategoriyalar statistikasi - oddiy ko'rinish"""
     categories = load_json(CATEGORIES_FILE)
     user_role = current_user.get("role")
     
@@ -721,15 +721,25 @@ async def get_all_statistics(current_user: dict = Depends(verify_token)):
         
         if category_id in stats_data["statistics"]:
             category_stats = stats_data["statistics"][category_id]
-            stats_list = list(category_stats["users"].values())
-            stats_list.sort(key=lambda x: x["percentage"], reverse=True)
+            
+            # Oddiy ko'rinish uchun
+            simple_stats = []
+            for username, data in category_stats["users"].items():
+                simple_stats.append({
+                    "username": username,
+                    "testCount": data["testCount"],
+                    "percentage": data["averagePercentage"]
+                })
+            
+            # Foizga ko'ra sortlash
+            simple_stats.sort(key=lambda x: x["percentage"], reverse=True)
             
             all_stats.append({
                 "categoryId": category_id,
                 "categoryName": category["name"],
                 "icon": category.get("icon", "📚"),
-                "statistics": stats_list,
-                "totalUsers": len(stats_list)
+                "statistics": simple_stats,
+                "totalUsers": len(simple_stats)
             })
         else:
             all_stats.append({
@@ -749,7 +759,7 @@ async def get_all_statistics(current_user: dict = Depends(verify_token)):
 
 @app.get("/api/statistics/{category_id}")
 async def get_category_statistics(category_id: str, current_user: dict = Depends(verify_token)):
-    """Bitta kategoriya statistikasi"""
+    """Bitta kategoriya statistikasi - oddiy ko'rinish"""
     categories = load_json(CATEGORIES_FILE)
     category = next((c for c in categories["categories"] if c["id"] == category_id), None)
     
@@ -772,15 +782,26 @@ async def get_category_statistics(category_id: str, current_user: dict = Depends
         }
     
     category_stats = stats_data["statistics"][category_id]
-    stats_list = list(category_stats["users"].values())
-    stats_list.sort(key=lambda x: x["percentage"], reverse=True)
+    
+    # Oddiy ko'rinish
+    simple_stats = []
+    for username, data in category_stats["users"].items():
+        simple_stats.append({
+            "username": username,
+            "testCount": data["testCount"],
+            "percentage": data["averagePercentage"]
+        })
+    
+    # Foizga ko'ra sortlash
+    simple_stats.sort(key=lambda x: x["percentage"], reverse=True)
     
     return {
         "categoryId": category_id,
         "categoryName": category_stats["categoryName"],
-        "statistics": stats_list,
-        "total": len(stats_list)
+        "statistics": simple_stats,
+        "total": len(simple_stats)
     }
+
 
 @app.get("/api/results")
 async def get_results(current_user: dict = Depends(verify_token)):
