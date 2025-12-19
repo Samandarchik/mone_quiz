@@ -73,6 +73,8 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
+class PasswordUpdate(BaseModel):
+    newPassword: str
 
 class CategoryCreate(BaseModel):
     name: str
@@ -278,6 +280,78 @@ async def login(user: UserLogin):
         }
     }
 
+@app.put("/api/passwordupdate")
+async def update_password(password_data: PasswordUpdate, current_user: dict = Depends(verify_token)):
+    """User parolini yangilash - token bilan"""
+    
+    # Userning username'ini tokendan olish
+    username = current_user.get("sub")
+    
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # Users faylini yuklash
+    data = load_json(USERS_FILE)
+    
+    # Userni topish
+    user_index = next((i for i, u in enumerate(data["users"]) if u["username"] == username), None)
+    
+    if user_index is None:
+        raise HTTPException(status_code=404, detail="User topilmadi")
+    
+    # Yangi parolni hash qilish
+    new_password_hash = hashlib.sha256(password_data.newPassword.encode()).hexdigest()
+    
+    # Parolni yangilash
+    data["users"][user_index]["password"] = new_password_hash
+    data["users"][user_index]["password_updated_at"] = datetime.now().isoformat()
+    
+    # Saqlash
+    save_json(USERS_FILE, data)
+    
+    return {
+        "status": True,
+        "statusCode": 200,
+        "message": "Parol muvaffaqiyatli yangilandi",
+        "username": username
+    }
+
+@app.put("/api/admin/passwordupdate")
+async def admin_update_password(user_id: str, password_data: PasswordUpdate, current_user: dict = Depends(verify_token)):
+    """Super admin tomonidan user parolini yangilash"""
+    
+    # Faqat super admin ruxsati
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admin can update user passwords")
+    
+    # Users faylini yuklash
+    data = load_json(USERS_FILE)
+    
+    # User ID bo'yicha topish
+    user_index = next((i for i, u in enumerate(data["users"]) if u["id"] == user_id), None)
+    
+    if user_index is None:
+        raise HTTPException(status_code=404, detail="User topilmadi")
+    
+    # Yangi parolni hash qilish
+    new_password_hash = hashlib.sha256(password_data.newPassword.encode()).hexdigest()
+    
+    # Parolni yangilash
+    data["users"][user_index]["password"] = new_password_hash
+    data["users"][user_index]["password_updated_at"] = datetime.now().isoformat()
+    data["users"][user_index]["password_updated_by"] = current_user.get("sub")
+    
+    # Saqlash
+    save_json(USERS_FILE, data)
+    
+    return {
+        "status": True,
+        "statusCode": 200,
+        "message": "User paroli muvaffaqiyatli yangilandi",
+        "userId": user_id,
+        "username": data["users"][user_index]["username"],
+        "updatedBy": current_user.get("sub")
+    }
 @app.get("/api/roles")
 async def get_roles(current_user: dict = Depends(verify_token)):
     if current_user.get("role") != "super_admin":
