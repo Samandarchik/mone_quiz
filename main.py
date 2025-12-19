@@ -20,8 +20,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 999999
 
 # Telegram Bot Token
-TELEGRAM_BOT_TOKEN = "8157743798:AAELzxyyFLSMxbT-XL4l-3ZVmxVBXYOY0Ro"
-TELEGRAM_USER_ID = 1066137436
+TELEGRAM_BOT_TOKEN = "7989357828:AAHuRE8dgc-Q7mOkiMpkWWMeIe1Hu1iI9XY"
+TELEGRAM_USER_ID = -4825641288
 
 # Database files
 DATA_DIR = Path("data")
@@ -677,20 +677,7 @@ async def submit_result_to_telegram(result_data: ResultSubmit, current_user: dic
 ⏱ Vaqt: {minutes} daqiqa {seconds} soniya
 📅 Sana: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-"""
-    
-    if result_data.wrongDetails and len(result_data.wrongDetails) > 0:
-        message += "\n<b>Xato javoblar:</b>\n"
-        for i, wa in enumerate(result_data.wrongDetails[:10], 1):
-            message += f"\n{i}. {wa['question'][:100]}...\n"
-            message += f"   ❌ Siz: {wa['userAnswer']}\n"
-            message += f"   ✅ To'g'ri: {wa['correctAnswer']}\n"
-        
-        if len(result_data.wrongDetails) > 10:
-            message += f"\n... va yana {len(result_data.wrongDetails) - 10} ta xato"
-    else:
-        message += "\n🎉 <b>Tabriklaymiz! Barcha javoblar to'g'ri!</b>"
-    
+""" 
     telegram_response = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID, message)
     
     return {
